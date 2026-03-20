@@ -12,7 +12,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # CRITICAL: Required to diff commits for new files
+          fetch-depth: 0
 
       - name: Setup Python & Java
         uses: actions/setup-python@v5
@@ -24,17 +24,35 @@ jobs:
           distribution: 'temurin'
 
       - name: Install System Dependencies
-        run: sudo apt-get update && sudo apt-get install -y zip unzip wget tar
+        run: sudo apt-get update && sudo apt-get install -y zip unzip wget tar jq lsb-release
 
       - name: Install Python Tools (Magika & Capa)
         run: |
           pip install magika flare-capa
 
-      - name: Install Detect-It-Easy (DIE)
+      - name: Install Detect-It-Easy (DIE) dynamically via GitHub API
         run: |
-          wget https://github.com/horsicq/DIE-engine/releases/latest/download/die_lin64_portable.tar.gz
-          tar -xf die_lin64_portable.tar.gz
-          sudo mv die_lin64_portable/diec /usr/local/bin/
+          # Detect the runner's Ubuntu version (e.g., 22.04 or 24.04)
+          OS_VER=$(lsb_release -rs)
+          echo "Runner OS Version: Ubuntu $OS_VER"
+          
+          # Fetch the latest release data from GitHub API
+          API_URL="https://api.github.com/repos/horsicq/Detect-It-Easy/releases/latest"
+          
+          # Find the .deb asset matching the runner's Ubuntu version
+          DOWNLOAD_URL=$(curl -s $API_URL | jq -r ".assets[] | select(.name | test(\"Ubuntu_${OS_VER}_amd64.deb\")) | .browser_download_url")
+          
+          # Fallback to 22.04 if a specific match isn't found for the runner's OS
+          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
+            echo "Exact OS version not found in DIE releases. Falling back to Ubuntu 22.04 deb..."
+            DOWNLOAD_URL=$(curl -s $API_URL | jq -r '.assets[] | select(.name | test("Ubuntu_22.04_amd64.deb")) | .browser_download_url' | head -n 1)
+          fi
+          
+          echo "Downloading DIE from: $DOWNLOAD_URL"
+          wget $DOWNLOAD_URL -O die.deb
+          
+          # Install the .deb package (this automatically places 'diec' in the PATH and installs dependencies)
+          sudo apt-get install -y ./die.deb
 
       - name: Install FLOSS (String Deobfuscation)
         run: |
@@ -59,7 +77,6 @@ jobs:
         run: |
           mkdir -p reports
           
-          # Find only files added or modified in the 'binaries' folder during this specific push
           NEW_FILES=$(git diff --name-only --diff-filter=AM ${{ github.event.before }} ${{ github.sha }} | grep '^binaries/' || true)
           
           if [ -z "$NEW_FILES" ]; then
@@ -71,34 +88,18 @@ jobs:
             if [ -f "$file" ]; then
               filename=$(basename "$file")
               
-              # Swap dots for dashes (e.g., malware.exe -> malware-exe)
               folder_name="${filename//./-}"
               out_dir="reports/$folder_name"
               
               mkdir -p "$out_dir"
               echo "Executing full analysis on $filename. Saving to $out_dir..."
               
-              # 1. AI File Identification
               magika "$file" > "$out_dir/magika.txt"
-              
-              # 2. Packer / Compiler Detection
               diec "$file" > "$out_dir/die.txt" || true
-              
-              # 3. Capability Mapping
               capa "$file" > "$out_dir/capa.txt" || true
-              
-              # 4. Hidden String Extraction
               floss --no-static "$file" > "$out_dir/floss.txt" || true
-              
-              # 5. Rizin (Extract Imports, Exports, and File Info)
               rizin --appimage-extract-and-run -c "iI; ii; iE" -q "$file" > "$out_dir/rizin.txt" || true
               
-              # 6. Ghidra Headless Static Analysis
-              # Uncomment the line below once your ExtractMain.py script is committed to a 'scripts/' folder
-              # ./ghidra/support/analyzeHeadless . TempProj -import "$file" -scriptPath ./scripts -postScript ExtractMain.py -deleteProject || true
-              # mv binaries/*_main.c "$out_dir/" 2>/dev/null || true
-              
-              # Zip the contents from inside the directory for a clean archive structure
               pushd "$out_dir" > /dev/null
               zip -r results.zip ./*
               popd > /dev/null
@@ -112,3 +113,43 @@ jobs:
         with:
           name: reverse-engineering-reports
           path: reports/
+
+      - name: Send Discord Notification
+        if: success()
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            echo "No Discord Webhook configured. Skipping notification."
+            exit 0
+          fi
+
+          PAYLOAD=$(cat <<EOF
+          {
+            "content": null,
+            "embeds": [
+              {
+                "title": "🚨 New Malware Analysis Complete 🚨",
+                "description": "The automated pipeline just finished processing new binaries in the \`take.action\` repository.",
+                "color": 16711680,
+                "fields": [
+                  {
+                    "name": "Pipeline Status",
+                    "value": "✅ Capa, Magika, FLOSS, DIE, and Rizin completed."
+                  },
+                  {
+                    "name": "Get the Report",
+                    "value": "[⬇️ Download the ZIP Artifact here](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+                  }
+                ],
+                "footer": {
+                  "text": "Serverless RE-Analyzer"
+                },
+                "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              }
+            ]
+          }
+          EOF
+          )
+
+          curl -s -H "Content-Type: application/json" -d "$PAYLOAD" $DISCORD_WEBHOOK
