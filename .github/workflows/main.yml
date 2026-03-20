@@ -1,0 +1,114 @@
+name: Reverse Engineer Analyser
+
+on:
+  push:
+    paths:
+      - 'binaries/**'
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # CRITICAL: Required to diff commits for new files
+
+      - name: Setup Python & Java
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Install System Dependencies
+        run: sudo apt-get update && sudo apt-get install -y zip unzip wget tar
+
+      - name: Install Python Tools (Magika & Capa)
+        run: |
+          pip install magika flare-capa
+
+      - name: Install Detect-It-Easy (DIE)
+        run: |
+          wget https://github.com/horsicq/DIE-engine/releases/latest/download/die_lin64_portable.tar.gz
+          tar -xf die_lin64_portable.tar.gz
+          sudo mv die_lin64_portable/diec /usr/local/bin/
+
+      - name: Install FLOSS (String Deobfuscation)
+        run: |
+          wget https://github.com/mandiant/flare-floss/releases/latest/download/floss-linux.zip
+          unzip floss-linux.zip
+          chmod +x floss
+          sudo mv floss /usr/local/bin/
+
+      - name: Install Rizin
+        run: |
+          wget https://github.com/rizinorg/rizin/releases/latest/download/rizin-linux-x86_64.AppImage -O rizin
+          chmod +x rizin
+          sudo mv rizin /usr/local/bin/
+
+      - name: Install Ghidra
+        run: |
+          wget https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.0.3_build/ghidra_11.0.3_PUBLIC_20240410.zip
+          unzip ghidra_11.0.3_PUBLIC_20240410.zip
+          mv ghidra_11.0.3_PUBLIC ghidra
+
+      - name: Execute Pipeline on NEW Files Only
+        run: |
+          mkdir -p reports
+          
+          # Find only files added or modified in the 'binaries' folder during this specific push
+          NEW_FILES=$(git diff --name-only --diff-filter=AM ${{ github.event.before }} ${{ github.sha }} | grep '^binaries/' || true)
+          
+          if [ -z "$NEW_FILES" ]; then
+            echo "No new binaries found in this push. Exiting smoothly."
+            exit 0
+          fi
+
+          for file in $NEW_FILES; do
+            if [ -f "$file" ]; then
+              filename=$(basename "$file")
+              
+              # Swap dots for dashes (e.g., malware.exe -> malware-exe)
+              folder_name="${filename//./-}"
+              out_dir="reports/$folder_name"
+              
+              mkdir -p "$out_dir"
+              echo "Executing full analysis on $filename. Saving to $out_dir..."
+              
+              # 1. AI File Identification
+              magika "$file" > "$out_dir/magika.txt"
+              
+              # 2. Packer / Compiler Detection
+              diec "$file" > "$out_dir/die.txt" || true
+              
+              # 3. Capability Mapping
+              capa "$file" > "$out_dir/capa.txt" || true
+              
+              # 4. Hidden String Extraction
+              floss --no-static "$file" > "$out_dir/floss.txt" || true
+              
+              # 5. Rizin (Extract Imports, Exports, and File Info)
+              rizin --appimage-extract-and-run -c "iI; ii; iE" -q "$file" > "$out_dir/rizin.txt" || true
+              
+              # 6. Ghidra Headless Static Analysis
+              # Uncomment the line below once your ExtractMain.py script is committed to a 'scripts/' folder
+              # ./ghidra/support/analyzeHeadless . TempProj -import "$file" -scriptPath ./scripts -postScript ExtractMain.py -deleteProject || true
+              # mv binaries/*_main.c "$out_dir/" 2>/dev/null || true
+              
+              # Zip the contents from inside the directory for a clean archive structure
+              pushd "$out_dir" > /dev/null
+              zip -r results.zip ./*
+              popd > /dev/null
+              
+              echo "✅ Analysis and ZIP complete for $filename."
+            fi
+          done
+
+      - name: Upload Analysis Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: reverse-engineering-reports
+          path: reports/
