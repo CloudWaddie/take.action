@@ -27,34 +27,22 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y zip unzip wget tar jq lsb-release
 
       - name: Install Python Tools (Magika & Capa)
-        run: |
-          pip install magika flare-capa
+        run: pip install magika flare-capa
 
-      - name: Install Detect-It-Easy (DIE) dynamically via GitHub API
+      - name: Install Detect-It-Easy (DIE)
         run: |
-          # Detect the runner's Ubuntu version (e.g., 22.04 or 24.04)
           OS_VER=$(lsb_release -rs)
-          echo "Runner OS Version: Ubuntu $OS_VER"
-          
-          # Fetch the latest release data from GitHub API
           API_URL="https://api.github.com/repos/horsicq/Detect-It-Easy/releases/latest"
-          
-          # Find the .deb asset matching the runner's Ubuntu version
           DOWNLOAD_URL=$(curl -s $API_URL | jq -r ".assets[] | select(.name | test(\"Ubuntu_${OS_VER}_amd64.deb\")) | .browser_download_url")
           
-          # Fallback to 22.04 if a specific match isn't found for the runner's OS
           if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
-            echo "Exact OS version not found in DIE releases. Falling back to Ubuntu 22.04 deb..."
             DOWNLOAD_URL=$(curl -s $API_URL | jq -r '.assets[] | select(.name | test("Ubuntu_22.04_amd64.deb")) | .browser_download_url' | head -n 1)
           fi
           
-          echo "Downloading DIE from: $DOWNLOAD_URL"
           wget $DOWNLOAD_URL -O die.deb
-          
-          # Install the .deb package (this automatically places 'diec' in the PATH and installs dependencies)
           sudo apt-get install -y ./die.deb
 
-      - name: Install FLOSS (String Deobfuscation)
+      - name: Install FLOSS
         run: |
           wget https://github.com/mandiant/flare-floss/releases/latest/download/floss-linux.zip
           unzip floss-linux.zip
@@ -87,24 +75,30 @@ jobs:
           for file in $NEW_FILES; do
             if [ -f "$file" ]; then
               filename=$(basename "$file")
-              
               folder_name="${filename//./-}"
               out_dir="reports/$folder_name"
               
               mkdir -p "$out_dir"
               echo "Executing full analysis on $filename. Saving to $out_dir..."
               
+              # Fast CLI Tools
               magika "$file" > "$out_dir/magika.txt"
               diec "$file" > "$out_dir/die.txt" || true
               capa "$file" > "$out_dir/capa.txt" || true
               floss --no-static "$file" > "$out_dir/floss.txt" || true
               rizin --appimage-extract-and-run -c "iI; ii; iE" -q "$file" > "$out_dir/rizin.txt" || true
               
+              # Cloud Ghidra Auto-Analysis
+              # This outputs a .gpr file and .rep folder directly into the out_dir
+              echo "Starting Ghidra Auto-Analysis in the cloud..."
+              ./ghidra/support/analyzeHeadless "$out_dir" "${folder_name}_project" -import "$file" || true
+              
+              # Zip everything (Reports + Ghidra Project)
               pushd "$out_dir" > /dev/null
               zip -r results.zip ./*
               popd > /dev/null
               
-              echo "✅ Analysis and ZIP complete for $filename."
+              echo "✅ Analysis, Ghidra Project generation, and ZIP complete for $filename."
             fi
           done
 
@@ -135,7 +129,7 @@ jobs:
                 "fields": [
                   {
                     "name": "Pipeline Status",
-                    "value": "✅ Capa, Magika, FLOSS, DIE, and Rizin completed."
+                    "value": "✅ Capa, Magika, FLOSS, DIE, Rizin, and **Ghidra Auto-Analysis** completed."
                   },
                   {
                     "name": "Get the Report",
