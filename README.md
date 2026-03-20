@@ -5,26 +5,24 @@
 
 A fully automated, serverless malware triage and reverse engineering pipeline built entirely on GitHub Actions. 
 
-Drop a suspicious binary into the repository, and GitHub will spin up an ephemeral clean-room environment, analyze the file using industry-standard tools, extract hidden capabilities, and bundle the intelligence reports into a neat ZIP file. Notifications are automatically pushed to Discord via Webhooks.
+Drop a suspicious binary into the repository, and GitHub will spin up an ephemeral clean-room environment, analyze the file, extract hidden capabilities, and perform the heavy CPU lifting of Ghidra Auto-Analysis. It then bundles the intelligence reports and the pre-computed Ghidra project into a neat ZIP file. 
 
 ## ⚙️ The Tool Stack
 
-This pipeline dynamically fetches and utilizes a stack of command-line reverse engineering tools:
-
 * **[Magika](https://google.github.io/magika/)**: AI-powered, deep-learning file identification.
-* **[Detect-It-Easy (DIE)](https://github.com/horsicq/Detect-It-Easy)**: Advanced packer, compiler, and signature detection (Dynamically pulled via GitHub API).
-* **[Capa](https://github.com/mandiant/capa)**: Behavioral capability mapping (identifies what the malware *can* do without running it).
-* **[FLOSS](https://github.com/mandiant/flare-floss)**: FireEye Labs Obfuscated String Solver (extracts hidden C2 domains and API keys).
+* **[Detect-It-Easy (DIE)](https://github.com/horsicq/Detect-It-Easy)**: Advanced packer, compiler, and signature detection.
+* **[Capa](https://github.com/mandiant/capa)**: Behavioral capability mapping.
+* **[FLOSS](https://github.com/mandiant/flare-floss)**: FireEye Labs Obfuscated String Solver (extracts hidden C2 domains).
 * **[Rizin](https://rizin.re/)**: High-speed extraction of imports, exports, and binary headers.
-* **[Ghidra (Headless)](https://ghidra-re.org/)**: Automated static analysis and C pseudo-code generation.
+* **[Ghidra (Headless)](https://ghidra-re.org/)**: Offloads Auto-Analysis to the cloud, generating a ready-to-open `.gpr` database.
 
 ## 🚀 How It Works
 
 1. **Upload:** Push a new executable or packed binary to the `binaries/` folder.
 2. **Trigger:** The GitHub Action detects the new file and spins up an Ubuntu runner.
-3. **Analyze:** The runner installs the tool stack and executes the analysis strictly on the newly added files.
-4. **Report:** The raw output from each tool is saved into a dedicated folder (e.g., `reports/sample-exe/`).
-5. **Archive & Alert:** The results are zipped, uploaded as an Action Artifact, and an alert is sent to a configured Discord channel. The runner is then destroyed, leaving zero local footprint.
+3. **Analyze:** The runner installs the tools and executes them strictly on the newly added files.
+4. **Compile:** Ghidra runs headlessly, performing full auto-analysis to save your local CPU from the heavy lifting.
+5. **Archive & Alert:** The text reports and the Ghidra `.gpr` project are zipped, uploaded as an Action Artifact, and an alert is sent to a configured Discord channel.
 
 ## 📂 Repository Structure
 
